@@ -1,0 +1,21 @@
+Copyright (C) 1997, Alan Burlison
+Version 0.02, 26/06/97
+
+This code is free software; you can redistribute it or modify it under the same
+terms as Perl itself.
+
+This is a utility to create a SVR4-type 'pkgadd' distribution of Perl.  In
+order to use the mkpkg script you must first apply the supplied patch
+'packlist.patch' to your Perl source, rebuild and reinstall Perl.  The supplied
+patch adds a new Perl module ExtUtils::Packlist, and modifies the Perl install
+scripts so that they generate a packlist file for Perl itself during
+installation.
+
+The script mkpkg will scan your system for the Perl packlist, and also for the
+packlists of any additional modules that you have installed.  It will then
+generate all the files required by the SVR4 pkgmk utility, and run pkgmk to
+build the pkgadd distribution.
+
+During subsequent installation of the generated package, the user will be asked
+if they wish to install any of the add-on modules contained in the package, and
+if they want to install documentation.

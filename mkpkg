@@ -1,0 +1,533 @@
+#!/usr/local/bin/perl -w
+
+use Carp;
+
+################################################################################
+# Copyright (C) 1997, Alan Burlison
+# Version 0.02, 26/06/97
+# 
+# This code is free software; you can redistribute it or modify it
+# under the same terms as Perl itself.
+#
+# This script creates a SVR4 'pkgadd' format distribution based on the currently
+# installed Perl, along with any additionally installed modules.
+
+use strict;
+use ExtUtils::Packlist;
+use Cwd;
+use IO::File;
+use Config;
+use File::Basename;
+use File::Find;
+use vars qw($VERSION %PKGINFO @PKGINFOORDER
+            %TYPETOPATH %PATHTOTYPE  %CLASSES %FILES);
+$VERSION = 0.02;
+$| = 1;
+
+# %PKGINFO	- Holds info to go into the pkginfo file
+# @PKGINFOORDER	- Order of the information in the pkginfo file
+# %TYPETOPATH   - maps class (prog, doc) to path
+# %PATHTOTYPE   - maps path to class (prog, doc)
+# %CLASSES	- All the classes seen so far
+# %FILES	- All the files seen so far
+
+################################################################################
+# Default pkginfo file contents.  Any value of 'ASK' results in the user being
+# prompted to supply a value.
+
+%PKGINFO = ( PKG      => 'perl5',
+             NAME     => 'Perl5 - Scripting language',
+             ARCH     => 'ASK',
+             VERSION  => $],
+             CATEGORY => 'application',
+             DESC     => 'Perl5 - Scripting language',
+             CLASSES  => '',
+             ISTATES  => 'S s 1 2 3',
+             RSTATES  => 'S s 1 2 3',
+             ORDER    => '',
+             MAXINST  => '1',
+             PSTAMP   => 'ASK',
+             HOTLINE  => 'ASK',
+             EMAIL    => 'ASK' );
+
+# This is the order in which we output stuff to the pkginfo file
+@PKGINFOORDER = qw(PKG NAME ARCH VERSION CATEGORY DESC CLASSES ISTATES RSTATES
+                   ORDER MAXINST PSTAMP HOTLINE EMAIL );
+
+################################################################################
+# Given a filename, return the file type char used in the prototype file
+
+sub ftype($)
+{
+my ($file) = @_;
+-f $file && return 'f';
+-l $file && return 's';
+-d $file && return 'd';
+}
+
+################################################################################
+# Record the file details that will end up in the prototype file in the passed
+# hash.  If a third param is present, the file to be recorded is a symbolic
+# link.  A record of the file is also kept in the %FILES hash
+
+sub recordfile(\%$;$)
+{
+my ($hash, $to, $from) = @_;
+
+# Ignore if the file is already recorded
+return(0) if exists($FILES{$to});
+croak "$to" if (! -e $to);
+
+my ($type) = $from ? 'l' : ftype($to);
+my ($mode, $owner, $group) = (stat($to))[2, 4, 5];
+$mode = sprintf("%o", $mode & 07777);
+$owner = (getpwuid($owner))[0];
+$group = (getgrgid($group))[0];
+my ($entry) = { type     => $type,
+                mode     => $mode,
+                owner    => $owner,
+                group    => $group };
+$entry->{from} = $from if ($from);
+$hash->{$to} = $entry,
+$FILES{$to} = $entry;
+return(1);
+}
+
+################################################################################
+# Given a directory pathname, this records an entry in the passed hash for
+# every component of the pathname that comes after the standard prefixes.
+# The longest possible prefix will be chosen..
+
+sub recorddirs(\%$)
+{
+my ($hash, $file) = @_;
+return if (! defined($file));
+my ($prefix);
+foreach my $p (reverse(sort(keys(%PATHTOTYPE))))
+   {
+   if ($file =~ s/^$p//) { $prefix = $p; last; }
+   }
+return if (! defined($prefix));
+my(@dirs) = split('/', dirname($file)); shift(@dirs);
+foreach my $dir (@dirs)
+   {
+   $prefix = "$prefix/$dir";
+   recordfile(%$hash, $prefix);
+   }
+}
+
+################################################################################
+# Record the all the info needed about a class. $class is the 'real' name of
+# the class that will be used to prompt the user during install.  $pkg is a
+# generated value that is used within the prototype file.  The two hashes
+# are the lists of program and documentation files to be installed for the class
+
+sub recordclass($$\%\%)
+{
+my ($class, $pkg, $prog_files, $doc_files) = @_;
+
+# Ignore empty classes
+return(0) if (scalar(keys(%$prog_files)) == 0
+              && scalar(keys(%$doc_files)) == 0);
+
+# Add in any directories required
+foreach my $file (keys(%$prog_files))
+   {
+   recorddirs(%$prog_files, $file);
+   recorddirs(%$prog_files, $prog_files->{$file}{from});
+   }
+foreach my $file (keys(%$doc_files))
+   {
+   recorddirs(%$doc_files, $file);
+   recorddirs(%$doc_files, $doc_files->{$file}{from});
+   }
+
+$CLASSES{$class} = { pkg  => $pkg,
+                     prog => $prog_files,
+                     doc  => $doc_files
+                   };
+return(1);
+}
+
+################################################################################
+# Read a core packlist file
+
+sub readcorepacklist(\%$)
+{
+my ($files, $pl) = @_;
+my ($pf) = ExtUtils::Packlist->new($pl);
+recordfile(%$files, $pl);
+my ($file);
+foreach $file (keys(%$pf))
+   {
+   recordfile(%$files, $file, $pf->{$file}->{from});
+   }
+}
+
+################################################################################
+# There are 3 possible packlist files for the core, all found under
+# $Config{installarchlib}
+
+sub getcore()
+{
+my ($prog_files, $doc_files) = ({}, {});
+
+print("   Listing core program files...\n");
+readcorepacklist(%$prog_files, "$Config{installarchlib}/.packlist.perl");
+
+my ($docs) = 0;
+if (-f "$Config{installarchlib}/.packlist.man")
+   {
+   print("   Listing core man pages...\n");
+   readcorepacklist(%$doc_files, "$Config{installarchlib}/.packlist.man");
+   $docs++;
+   }
+if (-f "$Config{installarchlib}/.packlist.html")
+   {
+   print("   Listing core html pages...\n");
+   readcorepacklist(%$doc_files, "$Config{installarchlib}/.packlist.html");
+   $docs++;
+   }
+print("   You don't seem to have any documentation installed\n") if (! $docs);
+
+# Save the info away
+recordfile(%$prog_files, $TYPETOPATH{prog});
+recordfile(%$doc_files, $TYPETOPATH{doc});
+recordclass('perl', 'Perl', %$prog_files, %$doc_files);
+}
+
+################################################################################
+# Modules all have .packlist files that tell you exactly what has been installed
+
+sub getmodules()
+{
+# Find all the .packlist files, and hence the additional modules
+my ($class) = "pkg01";
+foreach my $pl
+   (`find $Config{archlib} $Config{sitearch} -name .packlist -print`)
+   {
+   chomp($pl);
+   my $pkg = $pl;
+
+   # Hack of the leading bits of the paths & convert to module names
+   $pkg =~ s!$Config{archlib}/auto/(.*)/.packlist!$1!;
+   $pkg =~ s!$Config{sitearch}/auto/(.*)/.packlist!$1!;
+   $pkg =~ s!/!::!g;
+   print("   Found $pkg  Do you want to include it? [y] ");
+   my $r = <STDIN>; chomp($r);
+   next if ($r && $r !~ /^y/i);
+
+   # Read the .packlist & store all the contents
+   my $pf = ExtUtils::Packlist->new($pl);
+   my ($file, $prog_files, $doc_files);
+   $prog_files = { };
+   $doc_files = { };
+   recordfile(%$prog_files, $pl);
+   foreach $file (keys(%$pf))
+      {
+      $file =~ s!/\./!/!g;
+      if ($file =~ /^$TYPETOPATH{doc}/)
+         {
+         recordfile(%$doc_files, $file, $pf->{$file}->{from});
+         }
+      else
+         {
+         recordfile(%$prog_files, $file, $pf->{$file}->{from});
+         }
+      }
+   $class++ if recordclass($class, $pkg, %$prog_files, %$doc_files);
+   }
+}
+
+################################################################################
+# Optionally read in an existing pkginfo file if it exists.  Otherwise, ask
+# for the required values
+
+sub getpkginfo()
+{
+if (-f 'pkginfo')
+   {
+   # Read in the pkginfo file
+   print("I see you have a pkginfo file.  Do you want me to reuse it ? [y] ");
+   my $r = <STDIN>; chomp($r);
+   if (! $r || $r =~ /^y/i)
+      {
+      my $pf = IO::File->new('pkginfo', "r") || die("Can't open pkginfo: $!\n");
+      while (defined(my $line = <$pf>))
+         {
+         chomp($line);
+         $line =~ s/\s*#.*//;
+         next if (! $line);
+         my ($key, $val) = split(/\s*=\s*/, $line);
+         $val =~ s/"//g;
+         $PKGINFO{$key} = $val if ($PKGINFO{$key} eq 'ASK');
+         }
+      }
+   }
+
+# Ask for missing bits
+if (my @missing = grep($PKGINFO{$_} =~ /^ASK$/, @PKGINFOORDER))
+   {
+   print("I need the following pieces of information for the pkginfo file:\n");
+   foreach my $key (@missing)
+      {
+      print("   $key ? ");
+      my $val = <STDIN>;
+      chomp($val);
+      $PKGINFO{$key} = $val;
+      }
+   }
+
+# Save a list of all the classes found so far
+my (@list);
+foreach my $class (sort(keys(%CLASSES)))
+   {
+   foreach my $cat (qw(prog doc))
+      {
+      push(@list, "$class$cat");
+      }
+   }
+$PKGINFO{CLASSES} = join(' ', @list);
+$PKGINFO{ORDER} = $PKGINFO{CLASSES};
+}
+
+################################################################################
+# Write out a pkginfo file
+
+sub writepkginfo()
+{
+my ($pkg) = IO::File->new("pkginfo", "w")
+   || die("Can't create pkginfo: $!\n");
+$pkg->print("# pkginfo file for Perl version $]\n",
+            "# Generated by mkpkg version $VERSION on ",
+               scalar(localtime()), "\n",
+            "# Author: Alan Burlison <Alan.Burlison\@uk.sun.com>\n\n");
+foreach my $key (@PKGINFOORDER)
+   {
+   $pkg->print("$key=\"$PKGINFO{$key}\"\n");
+   }
+$pkg->close();
+}
+
+################################################################################
+# Utility to replace the front of a pathname with the appropriate prefix
+
+sub doprefix($$)
+{
+my ($file, $cat) = @_;
+croak if (! defined($file));
+foreach my $p (reverse(sort(keys(%PATHTOTYPE))))
+   {
+   my ($t) = uc($PATHTOTYPE{$p});
+   return($file) if ($file =~ s/^$p/$cat$t/);
+   }
+return($file);
+}
+
+################################################################################
+# Write out a prototype file.  All the necessary info is got from the %CLASSES
+# hash
+
+sub writeprototype()
+{
+my ($proto) = IO::File->new("prototype", "w")
+   || die("Can't create prototype: $!\n");
+
+$proto->print("# Prototype file for Perl version $]\n",
+              "# Generated by mkpkg version $VERSION on ",
+                 scalar(localtime()), "\n",
+              "# Author: Alan Burlison <Alan.Burlison\@uk.sun.com>\n\n");
+
+$proto->print("# We don't do relocation (yet!)\n!BASEDIR=/\n");
+foreach my $type (qw(prog doc))
+   {
+   my ($path) = $TYPETOPATH{$type};
+   $proto->print("\n# Source/destination for $type files\n");
+   my ($t) = uc($type);
+   $proto->print("!SRC$t=$path\n");
+   $proto->print("!DST$t=$path\n");
+   }
+
+$proto->print("\n# Included files\ni pkginfo\ni copyright\ni request\n");
+
+foreach my $class (sort(keys(%CLASSES)))
+   {
+   my ($pkg) = $CLASSES{$class}{pkg};
+   foreach my $cat (qw(prog doc))
+      {
+      my ($files) = $CLASSES{$class}{$cat};
+      $proto->print("\n# $pkg $cat files\n");
+      my ($c) = uc($cat);
+      foreach my $to (sort(keys(%$files)))
+         {
+         my ($type, $mode, $owner, $group, $from) =
+            @{$files->{$to}}{qw(type mode owner group from)};
+         CASE:
+            {
+            $type eq 'f' and do
+               {
+               $from = doprefix($to, '$SRC');
+               $to = doprefix($to, '$DST');
+               $proto->print("$type $class$cat $to=$from ",
+                             "$mode $owner $group\n");
+               last CASE;
+               };
+            $type eq 'd' and do
+               {
+               $to = doprefix($to, '$DST');
+               $proto->print("$type $class$cat $to $mode $owner $group\n");
+               last CASE;
+               };
+            $type eq 'l' || $type eq 's' and do
+               {
+               $from = doprefix($from, '$DST');
+               $to = doprefix($to, '$DST');
+               $proto->print("$type $class$cat $to=$from\n");
+               last CASE;
+               };
+            # default
+               die("Unknown file type $type for $to\n");
+               last CASE;
+            }
+         }
+      }
+   }
+}
+
+################################################################################
+# Write out the request shell script.  This will prompt the user to select
+# The components to be installed during the pkgadd run
+
+sub writerequest()
+{
+my ($rf) = IO::File->new("request", "w") || die("Can't open request: $!\n");
+my (@list) = grep($_ !~ /^perl/i, sort(keys(%CLASSES)));
+my ($classes) = join(' ', map("${_}prog", @list));
+my ($packages) = join(' ', map($CLASSES{$_}{pkg}, @list));
+
+$rf->print("#!/bin/sh\n",
+           "# request shell script for Perl version $]\n",
+           "# Generated by mkpkg version $VERSION on ",
+              scalar(localtime()), "\n",
+           "# Author: Alan Burlison <Alan.Burlison\@uk.sun.com>\n\n");
+
+print $rf <<REQUEST;
+# Ask the user what is to be installed
+# List of VAR=value statements output to stdout
+
+trap 'exit 3'  INT QUIT TERM
+
+# Default classes
+CLASSES=perlprog
+
+pkgs="$packages"
+classes="$classes"
+for pkg in \$pkgs
+do
+   ans=`ckyorn -p "Should the package \$pkg be installed? " -d n` || exit \$?
+   if [ "\$ans" = "y" ]
+   then
+      CLASSES="\$CLASSES `echo \$classes | awk '{ print \$1 }'`"
+      classes=`echo \$classes | awk '{ for (i = 2; i <= NF; i++) print \$i }'`
+   fi
+done
+
+# Ask if man pages should be installed
+ans=`ckyorn -p "Should man pages be installed for all the selected options? " \\
+   -d y` || exit \$?
+if [ "\$ans" = "y" ]
+then
+   CLASSES="\$CLASSES `echo \$CLASSES | sed -e 's/prog/doc/g'`"
+fi
+
+REQUEST
+
+$rf->print("cat >\$1 <<EOF\n");
+$rf->print("BASEDIR=/\n") if ($Config{osname} =~ /solaris/i);
+$rf->print("SRCPROG=$TYPETOPATH{prog}\n",
+           "DSTPROG=$TYPETOPATH{prog}\n",
+           "SRCDOC=$TYPETOPATH{doc}\n",
+           "DSTDOC=$TYPETOPATH{doc}\n",
+           "CLASSES=\"\$CLASSES\"\n",
+           "EOF\n",
+           "exit 0\n");
+$rf->close();
+}
+
+################################################################################
+# Run a shell command, reporting what we did & dying if there is an error
+
+sub runcmd($)
+{
+my ($cmd) = @_;
+print("Executing \"$cmd\"\n");
+system($cmd) == 0 || die("Error executing command \"$cmd\"\n");
+}
+
+################################################################################
+# Write out the copyright file.  This will be displayed during pkgadd
+
+sub writecopyright()
+{
+my ($cf) = IO::File->new("copyright", "w") || die("Can't open copyright: $!\n");
+print $cf <<COPYRIGHT;
+                           Perl Kit, Version 5.0
+
+                       Copyright 1989-1997, Larry Wall
+                            All rights reserved.
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of either:
+
+        a) the GNU General Public License as published by the Free
+        Software Foundation; either version 1, or (at your option) any
+        later version, or
+
+        b) the "Artistic License" which comes with this Kit.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See either
+    the GNU General Public License or the Artistic License for more details.
+COPYRIGHT
+$cf->close();
+}
+
+################################################################################
+# Main
+
+# Figure out where things are installed
+$TYPETOPATH{prog} = $Config{prefix};
+$TYPETOPATH{doc} = dirname($Config{installman1dir});
+%PATHTOTYPE = reverse(%TYPETOPATH);
+
+# Get a list of files that have been installed
+my ($prog_files, $doc_files) = ({}, {});
+
+print("Figuring out what core Perl files have been installed...\n");
+getcore();
+
+print("OK.  Now let's see which additional modules you have installed...\n");
+getmodules();
+
+print("Let's deal with the pkginfo file...\n");
+getpkginfo();
+
+print("Right.  Hang on a bit while I create a prototype file...\n");
+writeprototype();
+print("Now for the pkginfo file...\n");
+writepkginfo();
+print("Next, the request shell script...\n");
+writerequest();
+print("And finally the copyright file.\n");
+writecopyright();
+# print("Done.  Do you want to manually edit any of the files? [n] \n");
+
+print("Generating the package...\n");
+my ($pkg, $dir) = ("perl5", getcwd());
+runcmd("pkgmk -o -d $dir $pkg");
+runcmd("pkgtrans -os $dir $dir/$pkg.pkg $pkg");
+runcmd("/bin/rm -rf $pkg");
+print("Finished.  Your package file is called $pkg.pkg\n");
+
+################################################################################

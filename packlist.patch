@@ -1,0 +1,576 @@
+*** lib/ExtUtils/Install.pm.orig	Fri Jun  6 22:44:10 1997
+--- lib/ExtUtils/Install.pm	Thu Jun 26 18:49:05 1997
+***************
+*** 30,35 ****
+--- 30,36 ----
+  
+      use Cwd qw(cwd);
+      use ExtUtils::MakeMaker; # to implement a MY class
++     use ExtUtils::Packlist;
+      use File::Basename qw(dirname);
+      use File::Copy qw(copy);
+      use File::Find qw(find);
+***************
+*** 36,45 ****
+      use File::Path qw(mkpath);
+  
+      my(%hash) = %$hash;
+!     my(%pack, %write, $dir, $warn_permissions);
+      # -w doesn't work reliably on FAT dirs
+      $warn_permissions++ if $^O eq 'MSWin32';
+!     local(*DIR, *P);
+      for (qw/read write/) {
+  	$pack{$_}=$hash{$_};
+  	delete $hash{$_};
+--- 37,47 ----
+      use File::Path qw(mkpath);
+  
+      my(%hash) = %$hash;
+!     my(%pack, $dir, $warn_permissions);
+!     my($packlist) = ExtUtils::Packlist->new();
+      # -w doesn't work reliably on FAT dirs
+      $warn_permissions++ if $^O eq 'MSWin32';
+!     local(*DIR);
+      for (qw/read write/) {
+  	$pack{$_}=$hash{$_};
+  	delete $hash{$_};
+***************
+*** 60,74 ****
+  	}
+  	closedir DIR;
+      }
+!     if (-f $pack{"read"}) {
+! 	open P, $pack{"read"} or Carp::croak("Couldn't read $pack{'read'}");
+! 	# Remember what you found
+! 	while (<P>) {
+! 	    chomp;
+! 	    $write{$_}++;
+! 	}
+! 	close P;
+!     }
+      my $cwd = cwd();
+      my $umask = umask 0 unless $Is_VMS;
+  
+--- 62,68 ----
+  	}
+  	closedir DIR;
+      }
+!     $packlist->read($pack{"read"}) if (-f $pack{"read"});
+      my $cwd = cwd();
+      my $umask = umask 0 unless $Is_VMS;
+  
+***************
+*** 126,132 ****
+  	    } else {
+  		inc_uninstall($_,$File::Find::dir,$verbose,0); # nonono set to 0
+  	    }
+! 	    $write{$targetfile}++;
+  
+  	}, ".");
+  	chdir($cwd) or Carp::croak("Couldn't chdir to $cwd: $!");
+--- 120,126 ----
+  	    } else {
+  		inc_uninstall($_,$File::Find::dir,$verbose,0); # nonono set to 0
+  	    }
+! 	    $packlist->{$targetfile}++;
+  
+  	}, ".");
+  	chdir($cwd) or Carp::croak("Couldn't chdir to $cwd: $!");
+***************
+*** 136,146 ****
+  	$dir = dirname($pack{'write'});
+  	mkpath($dir,0,0755);
+  	print "Writing $pack{'write'}\n";
+! 	open P, ">$pack{'write'}" or Carp::croak("Couldn't write $pack{'write'}: $!");
+! 	for (sort keys %write) {
+! 	    print P "$_\n";
+! 	}
+! 	close P;
+      }
+  }
+  
+--- 130,136 ----
+  	$dir = dirname($pack{'write'});
+  	mkpath($dir,0,0755);
+  	print "Writing $pack{'write'}\n";
+! 	$packlist->write($pack{'write'});
+      }
+  }
+  
+***************
+*** 171,184 ****
+  }
+  
+  sub uninstall {
+      my($fil,$verbose,$nonono) = @_;
+      die "no packlist file found: $fil" unless -f $fil;
+      # my $my_req = $self->catfile(qw(auto ExtUtils Install forceunlink.al));
+      # require $my_req; # Hairy, but for the first
+!     local *P;
+!     open P, $fil or Carp::croak("uninstall: Could not read packlist file $fil: $!");
+!     while (<P>) {
+! 	chomp;
+  	print "unlink $_\n" if $verbose;
+  	forceunlink($_) unless $nonono;
+      }
+--- 161,173 ----
+  }
+  
+  sub uninstall {
++     use ExtUtils::Packlist;
+      my($fil,$verbose,$nonono) = @_;
+      die "no packlist file found: $fil" unless -f $fil;
+      # my $my_req = $self->catfile(qw(auto ExtUtils Install forceunlink.al));
+      # require $my_req; # Hairy, but for the first
+!     my ($packlist) = ExtUtils::Packlist->new($fil);
+!     foreach (sort(keys(%$packlist))) {
+  	print "unlink $_\n" if $verbose;
+  	forceunlink($_) unless $nonono;
+      }
+*** lib/ExtUtils/MM_Unix.pm.orig	Thu Jun 12 22:06:18 1997
+--- lib/ExtUtils/MM_Unix.pm	Thu Jun 26 18:49:06 1997
+***************
+*** 97,113 ****
+  # ';
+  
+  sub catdir {
+!     shift;
+      my @args = @_;
+      for (@args) {
+  	# append a slash to each argument unless it has one there
+  	$_ .= "/" if $_ eq '' or substr($_,-1) ne "/";
+      }
+!     my $result = join('', @args);
+!     # remove a trailing slash unless we are root
+!     substr($result,-1) = ""
+! 	if length($result) > 1 && substr($result,-1) eq "/";
+!     $result;
+  }
+  
+  =item catfile
+--- 97,109 ----
+  # ';
+  
+  sub catdir {
+!     my $self = shift @_;
+      my @args = @_;
+      for (@args) {
+  	# append a slash to each argument unless it has one there
+  	$_ .= "/" if $_ eq '' or substr($_,-1) ne "/";
+      }
+!     $self->canonpath(join('', @args));
+  }
+  
+  =item catfile
+***************
+*** 120,131 ****
+  sub catfile {
+      my $self = shift @_;
+      my $file = pop @_;
+!     return $file unless @_;
+      my $dir = $self->catdir(@_);
+      for ($dir) {
+  	$_ .= "/" unless substr($_,length($_)-1,1) eq "/";
+      }
+!     return $dir.$file;
+  }
+  
+  =item curdir
+--- 116,127 ----
+  sub catfile {
+      my $self = shift @_;
+      my $file = pop @_;
+!     return $self->canonpath($file) unless @_;
+      my $dir = $self->catdir(@_);
+      for ($dir) {
+  	$_ .= "/" unless substr($_,length($_)-1,1) eq "/";
+      }
+!     return $self->canonpath($dir.$file);
+  }
+  
+  =item curdir
+*** /dev/null	Fri Jun 27 12:09:28 1997
+--- lib/ExtUtils/Packlist.pm	Fri Jun 27 11:34:16 1997
+***************
+*** 0 ****
+--- 1,216 ----
++ package ExtUtils::Packlist;
++ use strict;
++ use Carp qw();
++ use vars qw($VERSION);
++ $VERSION = '1.01';
++ 
++ # Used for generating filehandle globs
++ my $fhname = "FH1";
++ 
++ sub mkfh()
++ {
++ no strict;
++ my $fh = \*{$fhname++};
++ use strict;
++ return($fh);
++ }
++ 
++ sub new($$)
++ {
++ my ($class, $packfile) = @_;
++ $class = ref($class) || $class;
++ my (%self);
++ tie(%self, $class, $packfile);
++ return(bless(\%self, $class));
++ }
++ 
++ sub TIEHASH
++ {
++ my ($class, $packfile) = @_;
++ my ($self) = { };
++ bless($self, $class);
++ $self->read($packfile) if (defined($packfile));
++ return($self);
++ }
++ 
++ sub STORE
++ {
++ $_[0]->{data}->{$_[1]} = $_[2];
++ }
++ 
++ sub FETCH
++ {
++ return($_[0]->{data}->{$_[1]});
++ }
++ 
++ sub FIRSTKEY
++ {
++ my $reset = scalar(keys(%{$_[0]->{data}}));
++ return(each(%{$_[0]->{data}}));
++ }
++ 
++ sub NEXTKEY
++ {
++ return(each(%{$_[0]->{data}}));
++ }
++ 
++ sub EXISTS
++ {
++ return(exists($_[0]->{data}->{$_[1]}));
++ }
++ 
++ sub DELETE
++ {
++ return(delete($_[0]->{data}->{$_[1]}));
++ }
++ 
++ sub CLEAR
++ {
++ %{$_[0]->{data}} = ();
++ }
++ 
++ sub DESTROY
++ {
++ close($_[0]->{fh}) if defined($_[0]->{fh});
++ }
++ 
++ sub read($;$)
++ {
++ my ($self, $packfile) = @_;
++ $self = tied(%$self) || $self;
++ if (defined($packfile))
++    {
++    close($self->{fh}) if defined($self->{fh});
++    $self->{fh} = mkfh();
++    open($self->{fh}, (-f $packfile ? "+<$packfile" : "+>$packfile"))
++       || Carp::croak("Can't open file $packfile: $!");
++    }
++ my ($fh) = $self->{fh};
++ Carp::croak("No .packlist filename specified") if (! defined($fh));
++ $self->{data} = {};
++ seek($fh, 0, 0);
++ my ($line);
++ while (defined($line = <$fh>))
++    {
++    chomp $line;
++    my ($key, @kvs) = split(' ', $line);
++    if (! @kvs)
++       {
++       $self->{data}->{$key} = undef;
++       }
++    else
++       {
++       my ($data) = {};
++       foreach my $kv (@kvs)
++          {
++          my ($k, $v) = split('=', $kv);
++          $data->{$k} = $v;
++          }
++       $self->{data}->{$key} = $data;
++       }
++    }
++ }
++ 
++ sub write($;$)
++ {
++ my ($self, $packfile) = @_;
++ $self = tied(%$self) || $self;
++ if (defined($packfile))
++    {
++    close($self->{fh}) if defined($self->{fh});
++    $self->{fh} = mkfh();
++    open($self->{fh}, "+>$packfile")
++       || Carp::croak("Can't open file $packfile: $!");
++    }
++ my ($fh) = $self->{fh};
++ Carp::croak("No .packlist filename specified") if (! defined($fh));
++ seek($fh, 0, 0);
++ foreach my $key (sort(keys(%{$self->{data}})))
++    {
++    print $fh ("$key");
++    if (ref($self->{data}->{$key}))
++       {
++       my $data = $self->{data}->{$key};
++       foreach my $k (sort(keys(%$data)))
++          {
++          print $fh (" $k=$data->{$k}");
++          }
++       }
++    print $fh ("\n");
++    }
++ # Force a flush
++ seek($fh, 0, 2);
++ }
++ 
++ 1;
++ 
++ __END__
++ 
++ =head1 NAME
++ 
++ ExtUtils::Packlist - manage .packlist files
++ 
++ =head1 SYNOPSIS
++ 
++    use ExtUtils::Packlist;
++    my ($pl) = ExtUtils::Packlist->new('.packlist');
++    $pl->write('/a/new/.packlist');
++    $pl->read('/an/old/.packlist');
++ 
++    $pl->{'/some/file/name'}++;
++       or
++    $pl->{'/some/other/file/name'} = { type => 'file',
++                                       from => '/some/file' };
++ 
++ =head1 DESCRIPTION
++ 
++ ExtUtils::Packlist provides a standard way to manage .packlist files.
++ Functions are provided to read and write .packlist files.  The original
++ .packlist format is a simple list of absolute pathnames, one per line.  In
++ addition, this package supports an extended format, where as well as a filename
++ each line may contain a list of attributes in the form of a space separated
++ list of key=value pairs.  This is used by the installperl script to
++ differentiate between files and links, for example.
++ 
++ =head1 USAGE
++ 
++ The hash reference returned by the new() function can be used to examine and
++ modify the contents of the .packlist.  Items may be added/deleted from the
++ .packlist by modifying the hash.  If the value associated with a hash key is a
++ scalar, the entry written to the .packlist by any subsequent write() will be a
++ simple filename.  If the value is a hash, the entry written will be the
++ filename followed by the key=value pairs from the hash.  Reading back the
++ .packlist will recreate the original entries.
++ 
++ =head1 FUNCTIONS
++ 
++ =over
++ 
++ =item new()
++ 
++ This takes an optional parameter, the name of a .packlist.  If the file exists,
++ it will be opened for reading/writing, and the contents of the file will be
++ read.  If the file does not exist, it will be created for writing.  The new()
++ method returns a reference to a hash.  This hash holds an entry for each line
++ in the .packlist.  In the case of old-style .packlists, the value associated
++ with each key is undef.  In the case of new-style .packlists, the value
++ associated with each key is a hash containing the key=value pairs following the
++ filename in the .packlist.
++ 
++ =item read()
++ 
++ This takes an optional parameter, the name of the .packlist to be read.  If
++ no file is specified, the existing .packlist will be reread.
++ 
++ =item write()
++ 
++ This takes an optional parameter, the name of the .packlist to be written.  If
++ no file is specified, the existing .packlist will be overwritten.
++ 
++ =back
++ 
++ =head1 AUTHOR
++ 
++ Alan Burlison <Alan.Burlison@uk.sun.com>
++ 
++ =cut
+*** installman.orig	Thu Jun 12 22:01:53 1997
+--- installman	Thu Jun 26 18:49:06 1997
+***************
+*** 3,10 ****
+--- 3,13 ----
+  use Config;
+  use Getopt::Long;
+  use File::Find;
++ use File::Copy;
+  use File::Path qw(mkpath);
++ use ExtUtils::Packlist;
+  use subs qw(unlink chmod rename link);
++ use vars qw($packlist);
+  require Cwd;
+  
+  umask 022;
+***************
+*** 50,55 ****
+--- 53,60 ----
+  -x "t/perl$Config{exe_ext}"		|| warn "WARNING: You've never run 'make test'!!!",
+  	"  (Installing anyway.)\n";
+  
++ $packlist = ExtUtils::Packlist->new();
++ 
+  # Install the main pod pages.
+  runpod2man('pod', $man1dir, $man1ext);
+  
+***************
+*** 156,161 ****
+--- 161,167 ----
+      }
+  }
+  
++ $packlist->write("$Config{installarchlib}/.packlist.man") unless $notify;
+  print STDERR "  Installation complete\n";
+  
+  exit 0;
+***************
+*** 194,205 ****
+  }
+  
+  sub link {
+!     local($from,$to) = @_;
+  
+      print STDERR "  ln $from $to\n";
+!     eval { CORE::link($from,$to) }
+! || system('cp', $from, $to) == 0
+! || warn "Couldn't link $from to $to: $!\n" unless $notify;
+  }
+  
+  sub rename {
+--- 200,226 ----
+  }
+  
+  sub link {
+!     my($from,$to) = @_;
+!     my($success) = 0;
+  
+      print STDERR "  ln $from $to\n";
+!     eval {
+!         CORE::link($from, $to)
+!             ? $success++
+!             : ($from =~ m#^/afs/# || $to =~ m#^/afs/#)
+!               ? die "AFS"  # okay inside eval {}
+!               : warn "Couldn't link $from to $to: $!\n"
+!           unless $notify;
+!         $packlist->{$to} = { from => $from, type => 'link' };
+!     };
+!     if ($@) {
+!         File::Copy::copy($from, $to)
+!             ? $success++
+!             : warn "Couldn't copy $from to $to: $!\n"
+!           unless $notify;
+!         $packlist->{$to} = { type => 'file' };
+!     }
+!     $success;
+  }
+  
+  sub rename {
+***************
+*** 214,219 ****
+--- 235,241 ----
+      }
+      link($from,$to) || return 0;
+      unlink($from);
++     $packlist->{$to} = { type => 'file' };
+  }
+  
+  sub chmod {
+*** installperl.orig	Mon May 12 04:22:27 1997
+--- installperl	Thu Jun 26 18:49:06 1997
+***************
+*** 10,17 ****
+--- 10,19 ----
+  use File::Compare;
+  use File::Copy ();
+  use File::Path ();
++ use ExtUtils::Packlist;
+  use Config;
+  use subs qw(unlink link chmod);
++ use vars qw($packlist);
+  
+  # override the ones in the rest of the script
+  sub mkpath {
+***************
+*** 20,25 ****
+--- 22,28 ----
+  
+  $mainperldir = "/usr/bin";
+  $exe_ext = $Config{exe_ext};
++ $packlist = ExtUtils::Packlist->new();
+  
+  while (@ARGV) {
+      $nonono = 1 if $ARGV[0] eq '-n';
+***************
+*** 280,285 ****
+--- 283,289 ----
+  
+  }
+  
++ $packlist->write("$installarchlib/.packlist.perl") unless $nono;
+  print STDERR "  Installation complete\n";
+  
+  exit 0;
+***************
+*** 353,358 ****
+--- 357,363 ----
+  	      ? die "AFS"  # okay inside eval {}
+  	      : warn "Couldn't link $from to $to: $!\n"
+  	  unless $nonono;
++         $packlist->{$to} = { from => $from, type => 'link' };
+      };
+      if ($@) {
+  	File::Copy::copy($from, $to)
+***************
+*** 359,364 ****
+--- 364,370 ----
+  	    ? $success++
+  	    : warn "Couldn't copy $from to $to: $!\n"
+  	  unless $nonono;
++         $packlist->{$to} = { type => 'file' };
+      }
+      $success;
+  }
+***************
+*** 379,384 ****
+--- 385,391 ----
+      File::Copy::copy($from, $to)
+  	|| warn "Couldn't copy $from to $to: $!\n"
+        unless $nonono;
++     $packlist->{$to} = { type => 'file' };
+  }
+  
+  sub samepath {
+***************
+*** 452,457 ****
+--- 459,465 ----
+  sub copy_if_diff {
+      my($from,$to)=@_;
+      -f $from || die "$0: $from not found";
++     $packlist->{$to} = { type => 'file' };
+      if (compare($from, $to) || $nonono) {
+  	safe_unlink($to);   # In case we don't have write permissions.
+          if ($nonono) {
